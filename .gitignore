@@ -1,0 +1,14 @@
+# Node-RED runtime / secrets — never commit these
+flows_cred.json
+flows_cred.json.backup
+.sessions.json
+.config.*.json
+.contexts
+*.backup
+node_modules/
+package-lock.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp

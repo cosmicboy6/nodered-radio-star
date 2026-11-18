@@ -1,0 +1,1050 @@
+[
+  {
+    "type": "tab",
+    "label": "Radio-Star",
+    "id": "61aec369d54f56c8",
+    "info": "Selbststaendige Badewetter-TTS-Flow. Ersetzt shell_command.update_wetter_nachrichten / badewetter_news_runner.py: liest sensor.badewetter_wien, erzeugt TTS via Supervisor-API (tts_get_url) und schreibt wetter.mp3 nach /share/htdocs/audio/tts/automation. Cron :26 und :56.",
+    "disabled": false
+  },
+  {
+    "id": "9d93de8549774adf",
+    "type": "inject",
+    "z": "61aec369d54f56c8",
+    "name": "Cron :26",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "26 * * * *",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 160,
+    "y": 520,
+    "wires": [
+      [
+        "cccee41e42f94849"
+      ]
+    ]
+  },
+  {
+    "id": "cdb8f33eb9f647cc",
+    "type": "inject",
+    "z": "61aec369d54f56c8",
+    "name": "Cron :56",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "56 * * * *",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 160,
+    "y": 560,
+    "wires": [
+      [
+        "cccee41e42f94849"
+      ]
+    ]
+  },
+  {
+    "id": "cccee41e42f94849",
+    "type": "function",
+    "z": "61aec369d54f56c8",
+    "name": "Wetter-Scrape wien.gv.at (200-Split, highbell am Ende)",
+    "func": "// Wetter-Scrape wien.gv.at -> 200-Zeichen-Split an Satzgrenze -> Google-TTS -> highbell als Trenner\n// Radio-Reihenfolge: 1 Nachrichten, 2 Wetter, 3 Tageslaenge, 4 anderes (dieser Flow baut das Wetter).\n\nconst SRC = 'https://www.wien.gv.at/svc/weather/today-and-daytime';\nconst HIGHBELL = 'http://192.168.0.50/audio/tts/highbell24.mp3';\nconst OUT = '/share/htdocs/audio/tts/wetter.mp3';\nconst UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';\nconst MAX = 200;\n\nfunction fetchBuf(url, depth) {\n    depth = depth == null ? 3 : depth;\n    return new Promise((resolve, reject) => {\n        const lib = url.indexOf('https:') === 0 ? https : http;\n        const r = lib.get(url, { headers: { 'User-Agent': UA, 'Accept': '*/*' }, timeout: 30000 }, res => {\n            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && depth > 0) {\n                const loc = res.headers.location;\n                res.resume();\n                let next;\n                if (/^https?:\\/\\//i.test(loc)) next = loc;\n                else if (loc.charAt(0) === '/') next = url.match(/^(https?:\\/\\/[^\\/]+)/)[1] + loc;\n                else next = url.replace(/\\/[^\\/]*$/, '/') + loc;\n                resolve(fetchBuf(next, depth - 1));\n                return;\n            }\n            const chunks = [];\n            res.on('data', c => chunks.push(c));\n            res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks) }));\n        });\n        r.on('timeout', () => r.destroy(new Error('timeout ' + url)));\n        r.on('error', reject);\n    });\n}\n\nfunction decodeEntities(s) {\n    const named = { amp: '&', lt: '<', gt: '>', quot: '\"', apos: \"'\", nbsp: ' ', auml: '\u00e4', ouml: '\u00f6', uuml: '\u00fc', Auml: '\u00c4', Ouml: '\u00d6', Uuml: '\u00dc', szlig: '\u00df', ndash: '\u2013', mdash: '\u2014', hellip: '\u2026', deg: '\u00b0' };\n    return s\n        .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCharCode(parseInt(h, 16)))\n        .replace(/&#(\\d+);/g, (_, d) => String.fromCharCode(parseInt(d, 10)))\n        .replace(/&([a-zA-Z]+);/g, (m, n) => (named[n] != null ? named[n] : m));\n}\n\nfunction extractWeather(html) {\n    const re = /<p[^>]*class=\"[^\"]*wm-weather-intraday__temp[^\"]*\"[^>]*>([\\s\\S]*?)<\\/p>/gi;\n    let m;\n    while ((m = re.exec(html)) !== null) {\n        let txt = m[1].replace(/<[^>]+>/g, ' ');\n        txt = decodeEntities(txt).replace(/\\s+/g, ' ').trim();\n        if (txt.length > 20) return txt;\n    }\n    return '';\n}\n\nfunction hardSplit(s) {\n    const out = [];\n    let rest = s;\n    while (rest.length > MAX) {\n        let cut = rest.lastIndexOf(' ', MAX);\n        if (cut < 40) cut = MAX;\n        out.push(rest.slice(0, cut).trim());\n        rest = rest.slice(cut).trim();\n    }\n    if (rest) out.push(rest);\n    return out;\n}\n\nfunction split200(text) {\n    const sents = text.replace(/\\s+/g, ' ').trim().split(/(?<=[.!?])\\s+/);\n    const out = [];\n    let cur = '';\n    for (let i = 0; i < sents.length; i++) {\n        const s = sents[i];\n        if (!s) continue;\n        const cand = cur ? cur + ' ' + s : s;\n        if (cand.length <= MAX) {\n            cur = cand;\n        } else {\n            if (cur) out.push(cur);\n            if (s.length > MAX) {\n                const hs = hardSplit(s);\n                for (let j = 0; j < hs.length; j++) out.push(hs[j]);\n                cur = '';\n            } else {\n                cur = s;\n            }\n        }\n    }\n    if (cur) out.push(cur);\n    return out;\n}\n\n(async () => {\n    const page = await fetchBuf(SRC);\n    if (page.status !== 200) throw new Error('wien.gv.at HTTP ' + page.status);\n    const text = extractWeather(page.body.toString('utf8'));\n    if (!text) throw new Error('kein wm-weather-intraday__temp mit Text gefunden');\n\n    const chunks = split200(text);\n    node.warn('Wettertext ' + text.length + ' Zeichen -> ' + chunks.length + ' Chunk(s): ' + chunks.map(c => c.length).join('/'));\n\n    const hb = await fetchBuf(HIGHBELL);\n    if (hb.status !== 200 || hb.body.length === 0) throw new Error('highbell HTTP ' + hb.status);\n\n    const parts = [];\n    for (let i = 0; i < chunks.length; i++) {\n        const q = encodeURIComponent(chunks[i]);\n        const t = await fetchBuf('https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=de-DE&ttsspeed=1&q=' + q);\n        if (t.status !== 200 || t.body.length === 0) throw new Error('TTS HTTP ' + t.status + ' bei Chunk ' + (i + 1));\n        parts.push(t.body);\n    }\n    parts.push(hb.body); // highbell nur am Ende = Trenner zum naechsten Segment\n\n    const audio = Buffer.concat(parts);\n    fs.mkdirSync(OUT.replace(/\\/[^\\/]+$/, ''), { recursive: true });\n    fs.writeFileSync(OUT, audio);\n\n    node.status({ fill: 'green', shape: 'dot', text: audio.length + ' B, ' + chunks.length + ' Chunk(s)' });\n    msg.payload = { ok: true, file: OUT, bytes: audio.length, chunks: chunks.length, chunk_texts: chunks, text: text };\n    node.send(msg);\n})().catch(err => {\n    node.status({ fill: 'red', shape: 'ring', text: 'Fehler' });\n    node.error(err, msg);\n    msg.payload = { ok: false, error: err.message };\n    node.send(msg);\n});\nreturn null;\n",
+    "outputs": 1,
+    "timeout": 60,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [
+      {
+        "var": "fs",
+        "module": "fs"
+      },
+      {
+        "var": "http",
+        "module": "http"
+      },
+      {
+        "var": "https",
+        "module": "https"
+      }
+    ],
+    "x": 500,
+    "y": 520,
+    "wires": [
+      [
+        "211de208e39d479f"
+      ]
+    ]
+  },
+  {
+    "id": "211de208e39d479f",
+    "type": "debug",
+    "z": "61aec369d54f56c8",
+    "name": "Ergebnis",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 860,
+    "y": 520,
+    "wires": []
+  },
+  {
+    "id": "aa10000000000001",
+    "type": "sunrise",
+    "z": "61aec369d54f56c8",
+    "name": "Tageslaenge Wien",
+    "lat": 48.17407,
+    "lon": 16.35876,
+    "start": "sunrise",
+    "end": "sunset",
+    "soff": 0,
+    "eoff": 0,
+    "sendAtStartup": true,
+    "x": 390,
+    "y": 640,
+    "wires": [
+      [
+        "aa10000000000002"
+      ],
+      []
+    ]
+  },
+  {
+    "id": "aa10000000000002",
+    "type": "function",
+    "z": "61aec369d54f56c8",
+    "name": "Zeiten merken",
+    "func": "if (msg.start && msg.end) {\n    flow.set('dayStart', new Date(msg.start).getTime());\n    flow.set('dayEnd', new Date(msg.end).getTime());\n}\nreturn null;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 600,
+    "y": 640,
+    "wires": [
+      [
+        "7f05e2fd36748c1d"
+      ]
+    ]
+  },
+  {
+    "id": "aa10000000000003",
+    "type": "inject",
+    "z": "61aec369d54f56c8",
+    "name": "Cron 23:54",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "54 23 * * *",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 170,
+    "y": 640,
+    "wires": [
+      [
+        "aa10000000000004"
+      ]
+    ]
+  },
+  {
+    "id": "aa10000000000004",
+    "type": "function",
+    "z": "61aec369d54f56c8",
+    "name": "Tageslaenge TTS + highbell",
+    "func": "// Tageslaenge (Wien) -> Text -> Google-TTS -> highbell am Ende -> tageslaenge.mp3\n// Sonnenzeiten kommen vom Palette-Node \"sunrise\" (node-red-node-suncalc) und liegen in flow.dayStart/dayEnd.\n\nconst HIGHBELL = 'http://192.168.0.50/audio/tts/highbell24.mp3';\nconst OUT = '/share/htdocs/audio/tts/tageslaenge.mp3';\nconst UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';\n\nfunction fetchBuf(url, depth) {\n    depth = depth == null ? 3 : depth;\n    return new Promise((resolve, reject) => {\n        const lib = url.indexOf('https:') === 0 ? https : http;\n        const r = lib.get(url, { headers: { 'User-Agent': UA, 'Accept': '*/*' }, timeout: 30000 }, res => {\n            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && depth > 0) {\n                const loc = res.headers.location;\n                res.resume();\n                let next;\n                if (/^https?:\\/\\//i.test(loc)) next = loc;\n                else if (loc.charAt(0) === '/') next = url.match(/^(https?:\\/\\/[^\\/]+)/)[1] + loc;\n                else next = url.replace(/\\/[^\\/]*$/, '/') + loc;\n                resolve(fetchBuf(next, depth - 1));\n                return;\n            }\n            const chunks = [];\n            res.on('data', c => chunks.push(c));\n            res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks) }));\n        });\n        r.on('timeout', () => r.destroy(new Error('timeout ' + url)));\n        r.on('error', reject);\n    });\n}\n\n(async () => {\n    const sMs = flow.get('dayStart');\n    const eMs = flow.get('dayEnd');\n    if (!sMs || !eMs) throw new Error('Sonnenzeiten noch nicht gesetzt (sunrise-Node)');\n    const ms = Number(eMs) - Number(sMs);\n    if (!(ms > 0)) throw new Error('ungueltige Sonnenzeiten: ' + sMs + ' / ' + eMs);\n\n    const totalMin = Math.round(ms / 60000);\n    const h = Math.floor(totalMin / 60);\n    const m = totalMin % 60;\n    const text = 'Die Heutige Tagesl\u00e4nge betr\u00e4gt: ' + h + ' Stunden und ' + m + ' Minuten.';\n    node.warn(text);\n\n    const t = await fetchBuf('https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=de-DE&ttsspeed=1&q=' + encodeURIComponent(text));\n    if (t.status !== 200 || t.body.length === 0) throw new Error('TTS HTTP ' + t.status);\n\n    // kein highbell am Ende\n    const audio = t.body;\n    fs.mkdirSync(OUT.replace(/\\/[^\\/]+$/, ''), { recursive: true });\n    fs.writeFileSync(OUT, audio);\n\n    node.status({ fill: 'green', shape: 'dot', text: h + 'h ' + m + 'min' });\n    msg.payload = { ok: true, file: OUT, bytes: audio.length, sunrise: sMs, sunset: eMs, hours: h, minutes: m, text: text };\n    node.send(msg);\n})().catch(err => {\n    node.status({ fill: 'red', shape: 'ring', text: 'Fehler' });\n    node.error(err, msg);\n    msg.payload = { ok: false, error: err.message };\n    node.send(msg);\n});\nreturn null;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [
+      {
+        "var": "fs",
+        "module": "fs"
+      },
+      {
+        "var": "http",
+        "module": "http"
+      },
+      {
+        "var": "https",
+        "module": "https"
+      }
+    ],
+    "x": 420,
+    "y": 580,
+    "wires": [
+      [
+        "aa10000000000005"
+      ]
+    ]
+  },
+  {
+    "id": "aa10000000000005",
+    "type": "debug",
+    "z": "61aec369d54f56c8",
+    "name": "Tageslaenge Ergebnis",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 820,
+    "y": 580,
+    "wires": []
+  },
+  {
+    "id": "bb20000000000001",
+    "type": "inject",
+    "z": "61aec369d54f56c8",
+    "name": "Cron :25",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "25 * * * *",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 160,
+    "y": 420,
+    "wires": [
+      [
+        "bb20000000000003"
+      ]
+    ]
+  },
+  {
+    "id": "bb20000000000002",
+    "type": "inject",
+    "z": "61aec369d54f56c8",
+    "name": "Cron :55",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "55 * * * *",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 160,
+    "y": 460,
+    "wires": [
+      [
+        "bb20000000000003"
+      ]
+    ]
+  },
+  {
+    "id": "bb20000000000003",
+    "type": "function",
+    "z": "61aec369d54f56c8",
+    "name": "Nachrichten ORF TTS + highbell je Item",
+    "func": "// Nachrichten (rss.orf.at/news.xml) -> je Titel TTS -> je Nachricht ein highbell -> am Ende highbell\n// Ergebnis: /share/htdocs/audio/tts/nachrichten.mp3 (Reihenfolge im Radio: 1 Nachrichten, 2 Wetter, 3 Tageslaenge, 4 anderes)\n\nconst SRC = 'https://rss.orf.at/news.xml';\nconst HIGHBELL = 'http://192.168.0.50/audio/tts/highbell24.mp3';\nconst OUT = '/share/htdocs/audio/tts/nachrichten.mp3';\nconst UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';\nconst MAX_ITEMS = 10;\nconst PAUSE_MS = 1000;\n\nfunction fetchBuf(url, depth) {\n    depth = depth == null ? 3 : depth;\n    return new Promise((resolve, reject) => {\n        const lib = url.indexOf('https:') === 0 ? https : http;\n        const r = lib.get(url, { headers: { 'User-Agent': UA, 'Accept': '*/*' }, timeout: 30000 }, res => {\n            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && depth > 0) {\n                const loc = res.headers.location;\n                res.resume();\n                let next;\n                if (/^https?:\\/\\//i.test(loc)) next = loc;\n                else if (loc.charAt(0) === '/') next = url.match(/^(https?:\\/\\/[^\\/]+)/)[1] + loc;\n                else next = url.replace(/\\/[^\\/]*$/, '/') + loc;\n                resolve(fetchBuf(next, depth - 1));\n                return;\n            }\n            const chunks = [];\n            res.on('data', c => chunks.push(c));\n            res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks) }));\n        });\n        r.on('timeout', () => r.destroy(new Error('timeout ' + url)));\n        r.on('error', reject);\n    });\n}\n\nfunction decodeEntities(s) {\n    const named = { amp: '&', lt: '<', gt: '>', quot: '\"', apos: \"'\", nbsp: ' ', auml: '\u00e4', ouml: '\u00f6', uuml: '\u00fc', Auml: '\u00c4', Ouml: '\u00d6', Uuml: '\u00dc', szlig: '\u00df', ndash: '\u2013', mdash: '\u2014', hellip: '\u2026', deg: '\u00b0', laquo: '\u00ab', raquo: '\u00bb', bdquo: '\u201e', ldquo: '\u201c', rdquo: '\u201d', sbquo: '\u201a', lsquo: '\u2018', rsquo: '\u2019' };\n    return s\n        .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCharCode(parseInt(h, 16)))\n        .replace(/&#(\\d+);/g, (_, d) => String.fromCharCode(parseInt(d, 10)))\n        .replace(/&([a-zA-Z]+);/g, (m, n) => (named[n] != null ? named[n] : m));\n}\n\nfunction parseTitles(xml) {\n    const out = [];\n    const re = /<item\\b[^>]*>([\\s\\S]*?)<\\/item>/gi;\n    let m;\n    while ((m = re.exec(xml)) !== null) {\n        const tm = /<title[^>]*>([\\s\\S]*?)<\\/title>/i.exec(m[1]);\n        if (!tm) continue;\n        let t = tm[1].replace(/<!\\[CDATA\\[|\\]\\]>/g, '').replace(/<[^>]+>/g, ' ');\n        t = decodeEntities(t).replace(/\\s+/g, ' ').trim();\n        if (t) out.push(t);\n        if (out.length >= MAX_ITEMS) break;\n    }\n    return out;\n}\n\nfunction sleep(ms) { return new Promise(r => setTimeout(r, ms)); }\n\n(async () => {\n    const page = await fetchBuf(SRC);\n    if (page.status !== 200) throw new Error('orf.at HTTP ' + page.status);\n    const titles = parseTitles(page.body.toString('utf8'));\n    if (!titles.length) throw new Error('keine Nachrichten gefunden');\n    node.warn('Nachrichten: ' + titles.length);\n\n    const hb = await fetchBuf(HIGHBELL);\n    if (hb.status !== 200 || hb.body.length === 0) throw new Error('highbell HTTP ' + hb.status);\n\n    const parts = [];\n    for (let i = 0; i < titles.length; i++) {\n        const t = await fetchBuf('https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=de-DE&ttsspeed=1&q=' + encodeURIComponent(titles[i]));\n        if (t.status !== 200 || t.body.length === 0) throw new Error('TTS HTTP ' + t.status + ' bei Nachricht ' + (i + 1));\n        parts.push(t.body);\n        parts.push(hb.body); // je Nachricht ein highbell (der letzte ist der Abschluss)\n        if (i < titles.length - 1) await sleep(PAUSE_MS);\n    }\n\n    const audio = Buffer.concat(parts);\n    fs.mkdirSync(OUT.replace(/\\/[^\\/]+$/, ''), { recursive: true });\n    fs.writeFileSync(OUT, audio);\n\n    node.status({ fill: 'green', shape: 'dot', text: titles.length + ' News, ' + audio.length + ' B' });\n    msg.payload = { ok: true, file: OUT, bytes: audio.length, items: titles.length, titles: titles };\n    node.send(msg);\n})().catch(err => {\n    node.status({ fill: 'red', shape: 'ring', text: 'Fehler' });\n    node.error(err, msg);\n    msg.payload = { ok: false, error: err.message };\n    node.send(msg);\n});\nreturn null;\n",
+    "outputs": 1,
+    "timeout": 180,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [
+      {
+        "var": "fs",
+        "module": "fs"
+      },
+      {
+        "var": "http",
+        "module": "http"
+      },
+      {
+        "var": "https",
+        "module": "https"
+      }
+    ],
+    "x": 450,
+    "y": 420,
+    "wires": [
+      [
+        "bb20000000000004"
+      ]
+    ]
+  },
+  {
+    "id": "bb20000000000004",
+    "type": "debug",
+    "z": "61aec369d54f56c8",
+    "name": "Nachrichten Ergebnis",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 820,
+    "y": 420,
+    "wires": []
+  },
+  {
+    "id": "bb30000000000001",
+    "type": "inject",
+    "z": "61aec369d54f56c8",
+    "d": true,
+    "name": "Cron :59:30",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "30 11 * * *",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 170,
+    "y": 360,
+    "wires": [
+      [
+        "bb30000000000002"
+      ]
+    ]
+  },
+  {
+    "id": "bb30000000000002",
+    "type": "function",
+    "z": "61aec369d54f56c8",
+    "name": "Random 1-4",
+    "func": "const n = Math.floor(Math.random() * 4) + 1;\nmsg.url = \"http://192.168.0.25/httpapi.asp?command=setPlayerCmd:play:http://192.168.0.50/audio/tts/random_\" + n + \".mp3\";\nmsg.payload = \"\";\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 370,
+    "y": 360,
+    "wires": [
+      [
+        "bb30000000000003"
+      ]
+    ]
+  },
+  {
+    "id": "bb30000000000003",
+    "type": "http request",
+    "z": "61aec369d54f56c8",
+    "name": "Play random_1-4",
+    "method": "GET",
+    "ret": "txt",
+    "paytoqs": "body",
+    "url": "",
+    "tls": "849977e5.257f68",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "x": 590,
+    "y": 360,
+    "wires": [
+      [
+        "bb30000000000004"
+      ]
+    ]
+  },
+  {
+    "id": "bb30000000000004",
+    "type": "debug",
+    "z": "61aec369d54f56c8",
+    "name": "Random Play Ergebnis",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 820,
+    "y": 360,
+    "wires": []
+  },
+  {
+    "id": "bb40000000000001",
+    "type": "inject",
+    "z": "61aec369d54f56c8",
+    "name": "Cron 00:59",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "59 0 * * *",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 170,
+    "y": 700,
+    "wires": [
+      [
+        "bb40000000000002"
+      ]
+    ]
+  },
+  {
+    "id": "bb40000000000002",
+    "type": "function",
+    "z": "61aec369d54f56c8",
+    "name": "Sonnenaufgang TTS",
+    "func": "const OUT = '/share/htdocs/audio/tts/Sonnenaufgang.mp3';\nconst UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';\n\nfunction fetchBuf(url, depth) {\n    depth = depth == null ? 3 : depth;\n    return new Promise((resolve, reject) => {\n        const lib = url.indexOf('https:') === 0 ? https : http;\n        const r = lib.get(url, { headers: { 'User-Agent': UA, 'Accept': '*/*' }, timeout: 30000 }, res => {\n            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && depth > 0) {\n                const loc = res.headers.location;\n                res.resume();\n                let next;\n                if (/^https?:\\/\\//i.test(loc)) next = loc;\n                else if (loc.charAt(0) === '/') next = url.match(/^(https?:\\/\\/[^\\/]+)/)[1] + loc;\n                else next = url.replace(/\\/[^\\/]*$/, '/') + loc;\n                resolve(fetchBuf(next, depth - 1));\n                return;\n            }\n            const chunks = [];\n            res.on('data', c => chunks.push(c));\n            res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks) }));\n        });\n        r.on('timeout', () => r.destroy(new Error('timeout ' + url)));\n        r.on('error', reject);\n    });\n}\n\n(async () => {\n    const ms = Number(flow.get('dayStart'));\n    if (!ms) throw new Error('Sonnenzeit noch nicht gesetzt (sunrise-Node)');\n    let hh, mm;\n    if (typeof Intl !== 'undefined') {\n        const p = new Intl.DateTimeFormat('de-AT', { timeZone: 'Europe/Vienna', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(ms));\n        hh = p.find(x => x.type === 'hour').value;\n        mm = p.find(x => x.type === 'minute').value;\n    } else {\n        const d = new Date(ms);\n        hh = String(d.getHours()).padStart(2, '0');\n        mm = String(d.getMinutes()).padStart(2, '0');\n    }\n    const text = 'Sonnenaufgang in Favoriten ist um: ' + hh + ':' + mm;\n    node.warn(text);\n    const t = await fetchBuf('https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=de-DE&ttsspeed=1&q=' + encodeURIComponent(text));\n    if (t.status !== 200 || t.body.length === 0) throw new Error('TTS HTTP ' + t.status);\n    fs.mkdirSync(OUT.replace(/\\/[^\\/]+$/, ''), { recursive: true });\n    fs.writeFileSync(OUT, t.body);\n    node.status({ fill: 'green', shape: 'dot', text: hh + ':' + mm });\n    msg.payload = { ok: true, file: OUT, bytes: t.body.length, time: hh + ':' + mm, text: text };\n    node.send(msg);\n})().catch(err => {\n    node.status({ fill: 'red', shape: 'ring', text: 'Fehler' });\n    node.error(err, msg);\n    msg.payload = { ok: false, error: err.message };\n    node.send(msg);\n});\nreturn null;\n",
+    "outputs": 1,
+    "timeout": 180,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [
+      {
+        "var": "fs",
+        "module": "fs"
+      },
+      {
+        "var": "http",
+        "module": "http"
+      },
+      {
+        "var": "https",
+        "module": "https"
+      }
+    ],
+    "x": 400,
+    "y": 700,
+    "wires": [
+      [
+        "bb40000000000003"
+      ]
+    ]
+  },
+  {
+    "id": "bb40000000000003",
+    "type": "debug",
+    "z": "61aec369d54f56c8",
+    "name": "Sonnenaufgang Ergebnis",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 810,
+    "y": 700,
+    "wires": []
+  },
+  {
+    "id": "bb40000000000004",
+    "type": "inject",
+    "z": "61aec369d54f56c8",
+    "name": "Cron 12:59",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "59 12 * * *",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 170,
+    "y": 760,
+    "wires": [
+      [
+        "bb40000000000005"
+      ]
+    ]
+  },
+  {
+    "id": "bb40000000000005",
+    "type": "function",
+    "z": "61aec369d54f56c8",
+    "name": "Sonnenuntergang TTS",
+    "func": "const OUT = '/share/htdocs/audio/tts/Sonnenuntergang.mp3';\nconst UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';\n\nfunction fetchBuf(url, depth) {\n    depth = depth == null ? 3 : depth;\n    return new Promise((resolve, reject) => {\n        const lib = url.indexOf('https:') === 0 ? https : http;\n        const r = lib.get(url, { headers: { 'User-Agent': UA, 'Accept': '*/*' }, timeout: 30000 }, res => {\n            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && depth > 0) {\n                const loc = res.headers.location;\n                res.resume();\n                let next;\n                if (/^https?:\\/\\//i.test(loc)) next = loc;\n                else if (loc.charAt(0) === '/') next = url.match(/^(https?:\\/\\/[^\\/]+)/)[1] + loc;\n                else next = url.replace(/\\/[^\\/]*$/, '/') + loc;\n                resolve(fetchBuf(next, depth - 1));\n                return;\n            }\n            const chunks = [];\n            res.on('data', c => chunks.push(c));\n            res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks) }));\n        });\n        r.on('timeout', () => r.destroy(new Error('timeout ' + url)));\n        r.on('error', reject);\n    });\n}\n\n(async () => {\n    const ms = Number(flow.get('dayEnd'));\n    if (!ms) throw new Error('Sonnenzeit noch nicht gesetzt (sunrise-Node)');\n    let hh, mm;\n    if (typeof Intl !== 'undefined') {\n        const p = new Intl.DateTimeFormat('de-AT', { timeZone: 'Europe/Vienna', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(ms));\n        hh = p.find(x => x.type === 'hour').value;\n        mm = p.find(x => x.type === 'minute').value;\n    } else {\n        const d = new Date(ms);\n        hh = String(d.getHours()).padStart(2, '0');\n        mm = String(d.getMinutes()).padStart(2, '0');\n    }\n    const text = 'Sonnenuntergang in Favoriten ist um: ' + hh + ':' + mm;\n    node.warn(text);\n    const t = await fetchBuf('https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=de-DE&ttsspeed=1&q=' + encodeURIComponent(text));\n    if (t.status !== 200 || t.body.length === 0) throw new Error('TTS HTTP ' + t.status);\n    fs.mkdirSync(OUT.replace(/\\/[^\\/]+$/, ''), { recursive: true });\n    fs.writeFileSync(OUT, t.body);\n    node.status({ fill: 'green', shape: 'dot', text: hh + ':' + mm });\n    msg.payload = { ok: true, file: OUT, bytes: t.body.length, time: hh + ':' + mm, text: text };\n    node.send(msg);\n})().catch(err => {\n    node.status({ fill: 'red', shape: 'ring', text: 'Fehler' });\n    node.error(err, msg);\n    msg.payload = { ok: false, error: err.message };\n    node.send(msg);\n});\nreturn null;\n",
+    "outputs": 1,
+    "timeout": 180,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [
+      {
+        "var": "fs",
+        "module": "fs"
+      },
+      {
+        "var": "http",
+        "module": "http"
+      },
+      {
+        "var": "https",
+        "module": "https"
+      }
+    ],
+    "x": 400,
+    "y": 760,
+    "wires": [
+      [
+        "bb40000000000006"
+      ]
+    ]
+  },
+  {
+    "id": "bb40000000000006",
+    "type": "debug",
+    "z": "61aec369d54f56c8",
+    "name": "Sonnenuntergang Ergebnis",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 800,
+    "y": 760,
+    "wires": []
+  },
+  {
+    "id": "bb50000000000001",
+    "type": "inject",
+    "z": "61aec369d54f56c8",
+    "name": "Cron :59:40",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "40 59 * * * *",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 160,
+    "y": 820,
+    "wires": [
+      [
+        "bb50000000000002"
+      ]
+    ]
+  },
+  {
+    "id": "bb50000000000002",
+    "type": "function",
+    "z": "61aec369d54f56c8",
+    "name": "Combining final.mp3",
+    "func": "const DIR = '/share/htdocs/audio/tts/';\nconst OUT = DIR + 'final.mp3';\nconst ERR = DIR + '_error_final.txt';\n\nfunction localParts(d) {\n    const p = new Intl.DateTimeFormat('de-AT', { timeZone: 'Europe/Vienna', weekday: 'long', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(d);\n    const get = t => (p.find(x => x.type === t) || {}).value;\n    return { weekday: get('weekday'), hour: Number(get('hour')), minute: Number(get('minute')) };\n}\n\ntry {\n    const now = new Date();\n    const target = new Date(now.getTime());\n    target.setMinutes(0, 0, 0);\n    if (now.getTime() - target.getTime() > 120000) target.setHours(target.getHours() + 1);\n\n    const hour = localParts(target).hour;\n    const np = localParts(now);\n    const weekday = np.weekday === 'Dienstag' ? 'Diensstag' : np.weekday;\n    const mins = hour * 60;\n    const t = target.getTime();\n    const sunrise = Number(flow.get('dayStart'));\n    const sunset = Number(flow.get('dayEnd'));\n\n    let sunFile = null;\n    if (sunset && mins >= 12 * 60 && t < sunset - 3600000) sunFile = 'Sonnenuntergang.mp3';\n    else if (sunrise && t < sunrise - 3600000) sunFile = 'Sonnenaufgang.mp3';\n\n    const parts = [\n        'notification.mp3',\n        hour + '.mp3',\n        'Die aktuellsten kurz Nachrichten.mp3',\n        'nachrichten.mp3',\n        'Wetter prognose f\u00fcr heute ' + weekday + '.mp3',\n        'wetter.mp3',\n        'tageslaenge.mp3'\n    ];\n    if (sunFile) parts.push(sunFile);\n    parts.push('spacer.mp3');\n\n    const missing = [];\n    const bufs = [];\n    for (const name of parts) {\n        const p = DIR + name;\n        if (!fs.existsSync(p)) { missing.push(name); continue; }\n        const b = fs.readFileSync(p);\n        if (!b || b.length === 0) { missing.push(name + ' (0 B)'); continue; }\n        bufs.push(b);\n    }\n    if (missing.length) throw new Error('fehlende Dateien: ' + missing.join(', '));\n\n    const audio = Buffer.concat(bufs);\n    fs.writeFileSync(OUT, audio);\n    try { if (fs.existsSync(ERR)) fs.unlinkSync(ERR); } catch (e) {}\n    node.status({ fill: 'green', shape: 'dot', text: hour + ':00 ' + weekday + ' ' + audio.length + ' B' });\n    msg.payload = { ok: true, file: OUT, bytes: audio.length, hour: hour, weekday: weekday, sun: sunFile, parts: parts };\n    node.send(msg);\n} catch (err) {\n    try { fs.writeFileSync(ERR, (err.stack || String(err)) + '\\n'); } catch (e) {}\n    node.status({ fill: 'red', shape: 'ring', text: 'Fehler' });\n    node.error(err, msg);\n    msg.payload = { ok: false, error: err.message };\n    node.send(msg);\n}\nreturn null;\n",
+    "outputs": 1,
+    "timeout": 60,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [
+      {
+        "var": "fs",
+        "module": "fs"
+      }
+    ],
+    "x": 400,
+    "y": 820,
+    "wires": [
+      [
+        "bb50000000000003"
+      ]
+    ]
+  },
+  {
+    "id": "bb50000000000003",
+    "type": "debug",
+    "z": "61aec369d54f56c8",
+    "name": "Combining Ergebnis",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 820,
+    "y": 820,
+    "wires": []
+  },
+  {
+    "id": "bb50000000000004",
+    "type": "inject",
+    "z": "61aec369d54f56c8",
+    "name": "RADIO STAR",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "0 0 * * * *",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 180,
+    "y": 220,
+    "wires": [
+      [
+        "bb50000000000005"
+      ]
+    ]
+  },
+  {
+    "id": "bb50000000000005",
+    "type": "http request",
+    "z": "61aec369d54f56c8",
+    "name": "Play final.mp3",
+    "method": "GET",
+    "ret": "txt",
+    "paytoqs": "ignore",
+    "url": "http://192.168.0.25/httpapi.asp?command=playPromptUrl:http://192.168.0.50/audio/tts/final.mp3",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "x": 380,
+    "y": 220,
+    "wires": [
+      [
+        "bb50000000000006",
+        "bb50000000000007"
+      ]
+    ]
+  },
+  {
+    "id": "bb50000000000006",
+    "type": "debug",
+    "z": "61aec369d54f56c8",
+    "name": "Play Ergebnis",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 840,
+    "y": 220,
+    "wires": []
+  },
+  {
+    "id": "7f05e2fd36748c1d",
+    "type": "debug",
+    "z": "61aec369d54f56c8",
+    "name": "",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 850,
+    "y": 640,
+    "wires": []
+  },
+  {
+    "id": "bb50000000000007",
+    "type": "function",
+    "z": "61aec369d54f56c8",
+    "name": "Final Dauer +3",
+    "func": "const buf = fs.readFileSync('/share/htdocs/audio/tts/final.mp3');\nconst brM1=[0,32,40,48,56,64,80,96,112,128,160,192,224,256,320];\nconst brM2=[0,8,16,24,32,40,48,56,64,80,96,112,128,144,160];\nconst srM1=[44100,48000,32000];\nconst srM2=[22050,24000,16000];\nconst srM25=[11025,12000,8000];\nfunction id3len(b,i){if(i+10<=b.length && b.toString('ascii',i,i+3)==='ID3'){const s=((b[i+6]&0x7f)<<21)|((b[i+7]&0x7f)<<14)|((b[i+8]&0x7f)<<7)|(b[i+9]&0x7f);return 10+s;}return 0;}\nlet i=0,dur=0,frames=0;\nwhile(i+4<=buf.length){\n  const sk=id3len(buf,i); if(sk){i+=sk;continue;}\n  if(buf[i]!==0xFF||(buf[i+1]&0xE0)!==0xE0){i++;continue;}\n  const b1=buf[i+1],b2=buf[i+2];\n  const ver=(b1>>3)&3, layer=(b1>>1)&3;\n  const brIdx=(b2>>4)&15, srIdx=(b2>>2)&3, pad=(b2>>1)&1;\n  if(ver===1||layer!==1||brIdx===0||brIdx===15||srIdx===3){i++;continue;}\n  const mpeg1=ver===3;\n  const br=(mpeg1?brM1:brM2)[brIdx]*1000;\n  const sr=(mpeg1?srM1:(ver===2?srM2:srM25))[srIdx];\n  const samples=mpeg1?1152:576;\n  const len=Math.floor((samples/8)*br/sr)+pad;\n  if(len<=0||i+len>buf.length){i++;continue;}\n  dur+=samples/sr;frames++;i+=len;\n}\nmsg.finalSeconds = +dur.toFixed(3);\nmsg.finalBytes = buf.length;\nmsg.finalFrames = frames;\nconst stopDelay = Math.round(dur*1000)+3000;\nconst fadeDelay = Math.round(dur*1000);\nnode.warn('Final '+msg.finalSeconds+' s, stopDelay '+stopDelay+' ms, fadeDelay '+fadeDelay+' ms');\nconst stopMsg = Object.assign({}, msg, { delay: stopDelay });\nconst fadeMsg = Object.assign({}, msg, { delay: fadeDelay });\nreturn [stopMsg, fadeMsg];",
+    "outputs": 2,
+    "timeout": "0",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [
+      {
+        "var": "fs",
+        "module": "fs"
+      }
+    ],
+    "x": 160,
+    "y": 300,
+    "wires": [
+      [
+        "bb50000000000008"
+      ],
+      [
+        "bb5000000000000c"
+      ]
+    ]
+  },
+  {
+    "id": "bb50000000000008",
+    "type": "function",
+    "z": "61aec369d54f56c8",
+    "name": "Warte Final+3s",
+    "func": "const d = Number(msg.delay) || 5000;\nnode.warn('Warte '+d+' ms');\nsetTimeout(() => { node.send(msg); }, d);\n",
+    "outputs": 1,
+    "timeout": "0",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 380,
+    "y": 300,
+    "wires": [
+      [
+        "bb50000000000009"
+      ]
+    ]
+  },
+  {
+    "id": "bb50000000000009",
+    "type": "function",
+    "z": "61aec369d54f56c8",
+    "name": "Random noch aktiv?",
+    "func": "const url = 'http://192.168.0.25/httpapi.asp?command=getPlayerStatus';\nhttp.get(url, res => {\n  let b=''; res.on('data', c => b += c);\n  res.on('end', () => {\n    try {\n      const d = JSON.parse(b);\n      const t = Number(d.totlen) || 0;\n      msg.totlen = t;\n      node.warn('Status totlen='+t+' status='+d.status);\n      if (t > 0 && t < 250000) {\n        msg.url = 'http://192.168.0.25/httpapi.asp?command=setPlayerCmd:stop';\n        msg.payload = msg.url;\n        node.send(msg);\n      } else {\n        node.warn('Kein Stop (Kontrollpunkt oder idle), totlen='+t);\n      }\n    } catch (e) { node.error('Status parse: '+e.message); }\n  });\n}).on('error', e => node.error('Status: '+e.message));",
+    "outputs": 1,
+    "timeout": "15",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [
+      {
+        "var": "http",
+        "module": "http"
+      }
+    ],
+    "x": 620,
+    "y": 300,
+    "wires": [
+      [
+        "bb5000000000000a"
+      ]
+    ]
+  },
+  {
+    "id": "bb5000000000000a",
+    "type": "http request",
+    "z": "61aec369d54f56c8",
+    "name": "Random stop",
+    "method": "GET",
+    "ret": "txt",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "x": 870,
+    "y": 300,
+    "wires": [
+      [
+        "bb5000000000000b"
+      ]
+    ]
+  },
+  {
+    "id": "bb5000000000000b",
+    "type": "debug",
+    "z": "61aec369d54f56c8",
+    "name": "Stop Ergebnis",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1060,
+    "y": 300,
+    "wires": []
+  },
+  {
+    "id": "bb500000000000c0",
+    "type": "http request",
+    "z": "61aec369d54f56c8",
+    "name": "Vol 60",
+    "method": "GET",
+    "ret": "txt",
+    "paytoqs": "ignore",
+    "url": "http://192.168.0.25/httpapi.asp?command=setPlayerCmd:vol:60",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "x": 1800,
+    "y": 520,
+    "wires": [
+      [
+        "bb500000000000d0"
+      ]
+    ]
+  },
+  {
+    "id": "bb500000000000d0",
+    "type": "delay",
+    "z": "61aec369d54f56c8",
+    "name": "2.3s",
+    "pauseType": "delay",
+    "timeout": "2.3",
+    "timeoutUnits": "seconds",
+    "rate": "1",
+    "nbRateUnits": "1",
+    "rateUnits": "second",
+    "randomFirst": "",
+    "randomLast": "",
+    "randomUnits": "seconds",
+    "drop": false,
+    "allowrate": false,
+    "outputs": 1,
+    "x": 2140,
+    "y": 520,
+    "wires": [
+      [
+        "bb500000000000c1"
+      ]
+    ]
+  },
+  {
+    "id": "bb500000000000c1",
+    "type": "http request",
+    "z": "61aec369d54f56c8",
+    "name": "Vol 75",
+    "method": "GET",
+    "ret": "txt",
+    "paytoqs": "ignore",
+    "url": "http://192.168.0.25/httpapi.asp?command=setPlayerCmd:vol:75",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "x": 2320,
+    "y": 520,
+    "wires": [
+      [
+        "bb500000000000d1"
+      ]
+    ]
+  },
+  {
+    "id": "bb500000000000d1",
+    "type": "delay",
+    "z": "61aec369d54f56c8",
+    "name": "2.3s",
+    "pauseType": "delay",
+    "timeout": "2.3",
+    "timeoutUnits": "seconds",
+    "rate": "1",
+    "nbRateUnits": "1",
+    "rateUnits": "second",
+    "randomFirst": "",
+    "randomLast": "",
+    "randomUnits": "seconds",
+    "drop": false,
+    "allowrate": false,
+    "outputs": 1,
+    "x": 2500,
+    "y": 520,
+    "wires": [
+      [
+        "bb500000000000c2"
+      ]
+    ]
+  },
+  {
+    "id": "bb500000000000c2",
+    "type": "http request",
+    "z": "61aec369d54f56c8",
+    "name": "Vol 85",
+    "method": "GET",
+    "ret": "txt",
+    "paytoqs": "ignore",
+    "url": "http://192.168.0.25/httpapi.asp?command=setPlayerCmd:vol:85",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "x": 2680,
+    "y": 520,
+    "wires": [
+      [
+        "bb500000000000d2"
+      ]
+    ]
+  },
+  {
+    "id": "bb500000000000d2",
+    "type": "delay",
+    "z": "61aec369d54f56c8",
+    "name": "2.3s",
+    "pauseType": "delay",
+    "timeout": "2.3",
+    "timeoutUnits": "seconds",
+    "rate": "1",
+    "nbRateUnits": "1",
+    "rateUnits": "second",
+    "randomFirst": "",
+    "randomLast": "",
+    "randomUnits": "seconds",
+    "drop": false,
+    "allowrate": false,
+    "outputs": 1,
+    "x": 2860,
+    "y": 520,
+    "wires": [
+      [
+        "bb500000000000c3"
+      ]
+    ]
+  },
+  {
+    "id": "bb500000000000c3",
+    "type": "http request",
+    "z": "61aec369d54f56c8",
+    "name": "Vol 100",
+    "method": "GET",
+    "ret": "txt",
+    "paytoqs": "ignore",
+    "url": "http://192.168.0.25/httpapi.asp?command=setPlayerCmd:vol:100",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "x": 3040,
+    "y": 520,
+    "wires": []
+  },
+  {
+    "id": "bb5000000000000c",
+    "type": "function",
+    "z": "61aec369d54f56c8",
+    "name": "Wait final end",
+    "func": "const d = Number(msg.delay) || 5000;\nnode.warn('Wait final end ' + d + ' ms');\nsetTimeout(() => {\n  node.send({});\n}, d);",
+    "outputs": 1,
+    "timeout": "0",
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1620,
+    "y": 520,
+    "wires": [
+      [
+        "bb500000000000c0"
+      ]
+    ]
+  }
+]
