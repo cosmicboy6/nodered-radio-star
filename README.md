@@ -5,7 +5,7 @@ weather + day length + news, turns them into speech, and plays them on a
 network media player with a volume ramp.
 
 It needs **no Home Assistant** — everything is fetched and generated inside
-Node-RED. This repo holds the exported flow, its assets and documentation.
+Node-RED. This repo holds the exported flow and its documentation.
 
 ## What the flow does
 
@@ -15,7 +15,6 @@ Node-RED. This repo holds the exported flow, its assets and documentation.
 | `:25` / `:55` | ORF news (`rss.orf.at`) → TTS + highbell per item |
 | `23:54` | Day length for Vienna (`sunrise` node) → TTS |
 | `00:59` / `12:59` | Sunrise / sunset TTS |
-| `:59:30` | Pick a random jingle (1–4) |
 | `:59:40` | Combine everything into `final.mp3` |
 | `RADIO STAR` (manual inject) | Play `final.mp3` on the media player |
 
@@ -27,7 +26,8 @@ the volume ramps **60 → 75 → 85 → 100**.
 
 - **Node-RED 5.0.9** (exported from this version)
 - Palette module: **`node-red-node-suncalc`** (provides the `sunrise` node)
-- A web server on `192.168.0.50` serving `/share/htdocs/audio/tts/…`
+- A web server on `192.168.0.50` serving `/share/htdocs/audio/tts/…`, with a
+  `highbell24.mp3` chime (no audio files are shipped in this repo)
 - A network media player at `192.168.0.25` with an `httpapi.asp` command
   interface
 - Internet access to `wien.gv.at`, `rss.orf.at` and
@@ -41,9 +41,8 @@ the volume ramps **60 → 75 → 85 → 100**.
 
 1. In Node-RED: menu → **Import** → paste or upload `flows/radio-star.json`.
 2. Install the palette dependency: **Manage palette → Install → `node-red-node-suncalc`**.
-3. Copy the audio assets into your web server's `/share/htdocs/audio/tts/`:
-   - `highbell24.mp3` (included in this repo)
-   - `random_1.mp3` … `random_4.mp3` (your own jingles — not included, see below)
+3. Make sure your web server has `/share/htdocs/audio/tts/` and a
+   `highbell24.mp3` chime in it.
 4. Adjust the addresses/paths below to your network.
 5. Deploy.
 
@@ -58,18 +57,10 @@ the volume ramps **60 → 75 → 85 → 100**.
 
 No credentials are stored in the flow. Never commit `flows_cred.json`.
 
-## Audio assets
-
-- `audio/highbell24.mp3` — the chime played between items (included).
-- `random_1.mp3` … `random_4.mp3` — **not included**: these are third-party
-  music tracks. Supply your own jingles with those names, or edit the
-  "Random 1–4" node.
-
 ## Files
 
 ```
-flows/radio-star.json    exported Node-RED tab (1 tab + 43 nodes)
-audio/highbell24.mp3     chime used by the flow
+flows/radio-star.json    exported Node-RED tab (1 tab + 35 nodes)
 README.md                this documentation
 LICENSE                  MIT
 ```
