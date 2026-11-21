@@ -1,6 +1,5 @@
 # Node-RED – Radio-Star
 
-[![Sponsor this project](https://img.shields.io/badge/Sponsor%20this%20project-FFDD00?style=flat-square&logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/hanshauberger)
 
 A **self-contained morning radio announcement** flow for Node-RED: it gathers
 weather + day length + news, turns them into speech, and plays them on a
@@ -121,3 +120,5 @@ LICENSE                  MIT
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+[![Sponsor this project](https://img.shields.io/badge/Sponsor%20this%20project-FFDD00?style=flat-square&logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/hanshauberger)
