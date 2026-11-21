@@ -121,4 +121,4 @@ LICENSE                  MIT
 
 MIT — see [LICENSE](LICENSE).
 
-[![Sponsor this project](https://img.shields.io/badge/Sponsor%20this%20project-FFDD00?style=flat-square&logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/hanshauberger)
+[![Sponsor this project](https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png)](https://buymeacoffee.com/hanshauberger)
